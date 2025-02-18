@@ -1,1 +1,2 @@
 # RubberDucky ESP32
+This repo contains a project for the ESP32S2 from Lilygo with a built-in TFT display. This code makes an ESP32S2 function as a keyboard that can fire off any payload you want by the click of a button when the device is plugged in. As a practical example this specific sketch installs DesktopGoose through keystroke manipulation in console with easy cleanup afterwards and plays a waddling goose/duck GIF on the screen after all keystrokes are fired. 
