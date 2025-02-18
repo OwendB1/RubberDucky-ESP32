@@ -235,7 +235,7 @@ void executePayload()
     "if (Test-Path \"$extractPath\\GooseDesktop.exe\") { Start-Process -FilePath \"$extractPath\\GooseDesktop.exe\" };"
     "Write-Host \"You left your PC unattended at work! That is not super smart....\";"
     "Write-Host \"You've gotten goosed for that reason.\";"
-    "Write-Host \"Simply press Spacebar to remove it now...\";"
+    "Write-Host \"Press Spacebar inside this window to remove it now...\";"
     "while ($true) {"
         "if ([console]::KeyAvailable) {"
             "$key = [console]::ReadKey($true).Key;"
