@@ -171,7 +171,11 @@ void setup()
 {
   Serial.begin(115200);
   tft.begin();
+  tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextSize(2);
+  tft.setCursor(0, 0);
 
   gif.begin(BIG_ENDIAN_PIXELS);
 
@@ -185,7 +189,7 @@ void setup()
     delay(10);
   }
   Serial.println(usbReady ? "USB is ready." : "USB did not become ready within timeout.");
-  Serial.println("PSRAM Size: " + String(ESP.getPsramSize()) + " bytes");
+  tft.drawString(usbReady ? "Quack is ready" : "Quack is broken", 0, 0);
 
   button.setDebounceTime(50);
 }
@@ -261,6 +265,7 @@ void loop()
   button.loop();
   if (button.isReleased())
   {
+    tft.setRotation(0);
     Serial.println("Button pressed. Executing HID actions & playing GIF...");
     shouldPlayGif = true;
     openPowerShell();
